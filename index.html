@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jump TON, pump prices</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #game {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+        }
+        #price {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 24px;
+            color: white;
+            z-index: 2;
+        }
+        #startButton {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 20px 40px;
+            font-size: 24px;
+            background-color: green;
+            color: white;
+            border: none;
+            border-radius: 15px;
+            cursor: pointer;
+            z-index: 2;
+        }
+        #leaderboard {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            max-height: 30vh; /* Максимальная высота — половина экрана */
+            overflow-y: auto; /* Прокрутка по вертикали */
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 10px 10px 0 0;
+            z-index: 2;
+            box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.5);
+            transform: translateY(100%); /* Скрываем таблицу по умолчанию */
+            transition: transform 0.3s ease; /* Плавное появление */
+        }
+        #leaderboard.visible {
+            transform: translateY(0); /* Показываем таблицу */
+        }
+        #leaderboard table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        #leaderboard th, #leaderboard td {
+            padding: 5px;
+            text-align: center;
+            border: 1px solid white;
+        }
+    </style>
+</head>
+<body>
+    <div id="game">
+        <canvas id="canvas"></canvas>
+        <div id="price">Price: 0.00$</div>
+        <button id="startButton">Start</button>
+<br><br><br>
+        <div id="leaderboard">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Имя</th>
+                        <th>Price</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboardBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        // ===== НАСТРОЙКИ ===== //
+        const GRAVITY = 0.5; // Сила гравитации
+        const JUMP_FORCE = -12; // Сила прыжка (отрицательное значение, чтобы двигаться вверх)
+        const MOVE_SPEED = 3; // Скорость движения влево/вправо
+        const MAX_JUMPS = 2; // Максимальное количество прыжков без приземления
+        const PLATFORM_WIDTH = 100; // Ширина платформ
+        const PLATFORM_HEIGHT = 20; // Высота платформ
+        const PLAYER_WIDTH = 50; // Ширина персонажа
+        const PLAYER_HEIGHT = 50; // Высота персонажа
+        const PRICE_INCREMENT = 0.01; // Шаг увеличения цены
+        const INITIAL_PLATFORM_Y = 100; // Высота начальной платформы от нижнего края
+        const RED_PLATFORM_CHANCE = 0.3; // Шанс появления красной платформы (30%)
+        // ==================== //
+
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Telegram Web App
+        const tg = window.Telegram.WebApp;
+        const telegramUser = {
+            id: tg.initDataUnsafe.user?.id || "unknown",
+            username: tg.initDataUnsafe.user?.username || "Гостьus",
+            nickname: tg.initDataUnsafe.user?.first_name || "Гостьnick"
+        };
+
+        // Game variables
+        let price = 0.00;
+        let velocityY = 0;
+        let velocityX = 0;
+        let alive = false;
+        let platforms = [];
+        let jumpCount = 0;
+        let player = {
+            x: canvas.width / 2 - PLAYER_WIDTH / 2,
+            y: canvas.height - INITIAL_PLATFORM_Y - PLAYER_HEIGHT, // Начальная позиция на платформе
+            width: PLAYER_WIDTH,
+            height: PLAYER_HEIGHT,
+            image: new Image()
+        };
+        player.image.src = 'https://raw.githubusercontent.com/gist/PonomareVlad/ca27237883d2a47a0588cd180139db55/raw/68996051ffabfc65520c3376df6df11898d3c736/TON.svg';
+
+        // Save user data
+        function saveUserData() {
+            const userData = {
+                telegram_id: telegramUser.id,
+                username: telegramUser.username,
+                nickname: telegramUser.nickname,
+                price: price.toFixed(2)
+            };
+
+            fetch('save_user.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(userData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    loadLeaderboard(); // Обновляем таблицу лидеров после сохранения
+                }
+            });
+        }
+
+        // Load leaderboard
+        function loadLeaderboard() {
+            fetch('get_leaderboard.php')
+                .then(response => response.json())
+                .then(data => {
+                    const leaderboardBody = document.getElementById("leaderboardBody");
+                    leaderboardBody.innerHTML = "";
+                    data.forEach((player, index) => {
+                        const row = document.createElement("tr");
+                        row.innerHTML = `
+                            <td>${index + 1}</td>
+                            <td>${player.nickname}</td>
+                            <td>${player.price}$</td>
+                        `;
+                        leaderboardBody.appendChild(row);
+                    });
+                });
+        }
+
+        // Create platforms
+        function createPlatforms() {
+            platforms = [];
+            // Начальная платформа под персонажем
+            platforms.push({
+                x: canvas.width / 2 - PLATFORM_WIDTH / 2,
+                y: canvas.height - INITIAL_PLATFORM_Y,
+                width: PLATFORM_WIDTH,
+                height: PLATFORM_HEIGHT,
+                color: "green" // Зелёная платформа
+            });
+            for (let i = 1; i < 5; i++) {
+                const isRed = Math.random() < RED_PLATFORM_CHANCE;
+                platforms.push({
+                    x: Math.random() * (canvas.width - PLATFORM_WIDTH),
+                    y: canvas.height - i * 200,
+                    width: PLATFORM_WIDTH,
+                    height: PLATFORM_HEIGHT,
+                    color: isRed ? "red" : "green", // Красная или зелёная платформа
+                    touched: false // Для красных платформ
+                });
+            }
+        }
+
+        // Draw player
+        function drawPlayer() {
+            ctx.drawImage(player.image, player.x, player.y, player.width, player.height);
+        }
+
+        // Draw platforms
+        function drawPlatforms() {
+            platforms.forEach(platform => {
+                ctx.fillStyle = platform.color;
+                ctx.fillRect(platform.x, platform.y, platform.width, platform.height);
+            });
+        }
+
+        // Update game state
+        function update() {
+            if (!alive) return;
+
+            // Apply gravity
+            velocityY += GRAVITY;
+            player.y += velocityY;
+            player.x += velocityX;
+
+            // Check for collision with platforms
+            platforms.forEach((platform, index) => {
+                if (player.y + player.height >= platform.y &&
+                    player.y <= platform.y + platform.height &&
+                    player.x + player.width >= platform.x &&
+                    player.x <= platform.x + platform.width) {
+                    if (platform.color === "red" && !platform.touched) {
+                        platform.touched = true;
+                        platforms.splice(index, 1); // Удаляем красную платформу после касания
+                    }
+                    velocityY = JUMP_FORCE; // Отталкиваем персонажа вверх
+                    jumpCount = 0; // Сбрасываем счётчик прыжков
+                }
+            });
+
+            // Check for game over
+            if (player.y + player.height > canvas.height) {
+                alive = false;
+                saveUserData(); // Сохраняем данные пользователя
+                document.getElementById("startButton").style.display = "block";
+                document.getElementById("leaderboard").classList.add("visible"); // Показываем таблицу
+            }
+
+            // Move platforms down
+            if (player.y < canvas.height / 2) {
+                const deltaY = canvas.height / 2 - player.y;
+                player.y += deltaY;
+                platforms.forEach(platform => {
+                    platform.y += deltaY;
+                });
+                price += PRICE_INCREMENT; // Увеличиваем цену
+                document.getElementById("price").innerText = "Price: " + price.toFixed(2) + "$";
+            }
+
+            // Generate new platforms
+            if (platforms[platforms.length - 1].y > 0) {
+                const isRed = Math.random() < RED_PLATFORM_CHANCE;
+                platforms.push({
+                    x: Math.random() * (canvas.width - PLATFORM_WIDTH),
+                    y: platforms[platforms.length - 1].y - 200,
+                    width: PLATFORM_WIDTH,
+                    height: PLATFORM_HEIGHT,
+                    color: isRed ? "red" : "green", // Красная или зелёная платформа
+                    touched: false // Для красных платформ
+                });
+            }
+
+            // Remove off-screen platforms
+            if (platforms[0].y > canvas.height) {
+                platforms.shift();
+            }
+
+            // Teleport player if goes off-screen horizontally
+            if (player.x + player.width < 0) {
+                player.x = canvas.width;
+            } else if (player.x > canvas.width) {
+                player.x = -player.width;
+            }
+        }
+
+        // Draw background with gradient
+        function drawBackground() {
+            const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            const greenIntensity = Math.min(price / 50, 1); // Зелёный цвет зависит от цены
+            gradient.addColorStop(0, `rgb(${255 * (1 - greenIntensity)}, ${255 * greenIntensity}, 0)`); // Красный и зелёный снизу
+            gradient.addColorStop(1, `rgb(0, ${255 * greenIntensity}, 0)`); // Зелёный сверху
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // Draw everything
+        function draw() {
+            drawBackground();
+            drawPlatforms();
+            drawPlayer();
+        }
+
+        // Game loop
+        function gameLoop() {
+            update();
+            draw();
+            if (alive) requestAnimationFrame(gameLoop);
+        }
+
+        // Start game
+        function beginGame() {
+            alive = true;
+            price = 0.00;
+            document.getElementById("price").innerText = "Price: 0.00$";
+            document.getElementById("startButton").style.display = "none";
+            document.getElementById("leaderboard").classList.remove("visible"); // Скрываем таблицу
+            player.y = canvas.height - INITIAL_PLATFORM_Y - PLAYER_HEIGHT; // Начальная позиция на платформе
+            player.x = canvas.width / 2 - PLAYER_WIDTH / 2;
+            velocityY = 0;
+            velocityX = 0;
+            jumpCount = 0;
+            createPlatforms();
+            gameLoop();
+        }
+
+        // Event listeners
+        document.getElementById("startButton").addEventListener("click", () => {
+            beginGame();
+        });
+
+        // Обработчик нажатий на экран
+        canvas.addEventListener("click", (event) => {
+            if (alive) {
+                if (jumpCount < MAX_JUMPS) {
+                    velocityY = JUMP_FORCE; // Прыжок вверх
+                    jumpCount++;
+                }
+                // Движение влево или вправо
+                if (event.clientX < canvas.width / 2) {
+                    velocityX = -MOVE_SPEED; // Движение влево
+                } else {
+                    velocityX = MOVE_SPEED; // Движение вправо
+                }
+            }
+        });
+
+        // On window load
+        window.onload = function () {
+            drawBackground(); // Отрисовываем фон сразу
+            loadLeaderboard(); // Загружаем таблицу лидеров
+            document.getElementById("leaderboard").classList.add("visible"); // Показываем таблицу
+        };
+    </script>
+</body>
+</html>
